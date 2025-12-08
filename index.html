@@ -109,7 +109,7 @@
 
     // ===== WEBSOCKET =====
     function setupSocket() {
-        socket = new WebSocket('ws://localhost:3000');
+        socket = new WebSocket('ws://10.0.0.7:3000');
 
         socket.onopen = () => {
             addLine(`[${getTime()}] SYSTEM: LINK_OPEN`);
@@ -321,4 +321,5 @@ function makeDistortionCurve(amount) {
 
 
 </body>
+
 </html>
