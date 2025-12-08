@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESMSWS</title>
+    <link rel="stylesheet" href="Style.css">
+</head>
+<body>
+    <div class="scanlines"></div>
+    
+    <div class="container">
+        <div class="corner-decoration corner-tl"></div>
+        <div class="corner-decoration corner-tr"></div>
+        <div class="corner-decoration corner-bl"></div>
+        <div class="corner-decoration corner-br"></div>
+        
+        <div class="header">
+            <div class="title">ENDLESS-SMS-WebSERVER</div>
+            <div class="system-status">
+                <div class="status-item">
+                    <div class="status-dot"></div>
+                    <span>ONLINE</span>
+                </div>
+                <div class="status-item">
+                    <span id="time-display">--:--:--</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="message-log" id="message-log"></div>
+        
+        <div class="input-area">
+            <div class="input-line">
+                <span class="prompt">&gt;</span>
+                <input type="text" id="message-input" autocomplete="off" autofocus>
+            </div>
+            
+            <div class="controls">
+                <button class="btn" id="send-btn">[COMMAND]</button>
+                <label class="btn">
+                    [FILE]
+                    <input type="file" id="file-input">
+                </label>
+                <button class="btn" id="mic-btn">[MIC]</button>
+                <button class="btn" id="clear-btn">[CLEAR]</button>
+            </div>
+        </div>
+        
+        <div class="stats-bar">
+            <div class="stats-item">
+                <span>MESSAGES: <span id="msg-count">0</span></span>
+                <span>SESSION: <span id="session-time">00:00</span></span>
+            </div>
+            <div class="stats-item">
+                <span>v1.0.0</span>
+            </div>
+        </div>
+    </div>
+
+<script>
+    const messageLog = document.getElementById('message-log');
+    const messageInput = document.getElementById('message-input');
+    const sendBtn = document.getElementById('send-btn');
+    const fileInput = document.getElementById('file-input');
+    const micBtn = document.getElementById('mic-btn');
+    const clearBtn = document.getElementById('clear-btn');
+    const timeDisplay = document.getElementById('time-display');
+    const msgCount = document.getElementById('msg-count');
+    const sessionTime = document.getElementById('session-time');
+
+    let messageCounter = 0;
+    let sessionStart = Date.now();
+
+    let socket = null;
+    let incomingMeta = null;
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let isRecording = false;
+
+    function updateTime() {
+        const now = new Date();
+        timeDisplay.textContent = now.toLocaleTimeString();
+        const elapsed = Math.floor((Date.now() - sessionStart) / 1000);
+        const mins = Math.floor(elapsed / 60).toString().padStart(2, '0');
+        const secs = (elapsed % 60).toString().padStart(2, '0');
+        sessionTime.textContent = `${mins}:${secs}`;
+    }
+    setInterval(updateTime, 1000);
+
+    function getTime() {
+        const now = new Date();
+        return now.toTimeString().split(' ')[0];
+    }
+
+    function addLine(text) {
+        const line = document.createElement('div');
+        line.className = 'message-entry';
+        line.textContent = text;
+        messageLog.appendChild(line);
+        messageLog.scrollTop = messageLog.scrollHeight;
+        messageCounter++;
+        msgCount.textContent = messageCounter;
+    }
+
+    function focusInput() {
+        setTimeout(() => messageInput.focus(), 10);
+    }
+
+    // ===== WEBSOCKET =====
+    function setupSocket() {
+        socket = new WebSocket('ws://localhost:3000');
+
+        socket.onopen = () => {
+            addLine(`[${getTime()}] SYSTEM: LINK_OPEN`);
+        };
+
+        socket.onclose = () => {
+            addLine(`[${getTime()}] SYSTEM: LINK_LOST — RECONNECTING`);
+            setTimeout(setupSocket, 2000);
+        };
+
+        socket.onerror = () => {
+            addLine(`[${getTime()}] SYSTEM: ERROR`);
+        };
+
+        socket.onmessage = async (event) => {
+            if (typeof event.data === 'string' &&
+                event.data.startsWith('{') &&
+                event.data.endsWith('}')) {
+                
+                incomingMeta = JSON.parse(event.data);
+                return;
+            }
+
+            if (incomingMeta) {
+                const meta = incomingMeta;
+                incomingMeta = null;
+
+                if (meta.type === "audio") {
+                    playProcessedAudio(event.data);
+                }
+                else if (meta.type === "file") {
+                    offerFileDownload(event.data, meta.name);
+                }
+
+                return;
+            }
+
+            addLine(`[${getTime()}] ${event.data}`);
+        };
+    }
+
+    function sendMessage() {
+        const msg = messageInput.value.trim();
+        if (!msg) return;
+
+        addLine(`[${getTime()}] ${msg}`);
+
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(msg);
+        }
+
+        messageInput.value = '';
+        focusInput();
+    }
+
+    sendBtn.onclick = sendMessage;
+    messageInput.addEventListener('keydown', e => {
+        if (e.key === "Enter") sendMessage();
+    });
+
+    // ===== FILE SEND =====
+    fileInput.addEventListener('change', () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+
+        socket.send(JSON.stringify({
+            type: "file",
+            name: file.name,
+            size: file.size
+        }));
+
+        socket.send(file);
+
+        addLine(`[${getTime()}] FILE SENT: ${file.name}`);
+        fileInput.value = '';
+        focusInput();
+    });
+
+    function offerFileDownload(blob, filename) {
+        const url = URL.createObjectURL(blob);
+
+        const line = document.createElement('div');
+        line.className = 'message-entry';
+        line.innerHTML = `[${getTime()}] FILE RECEIVED: ${filename} <button>[DL]</button>`;
+        messageLog.appendChild(line);
+
+        line.querySelector('button').onclick = () => {
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+        };
+
+        messageLog.scrollTop = messageLog.scrollHeight;
+        messageCounter++;
+        msgCount.textContent = messageCounter;
+    }
+
+    // ===== MIC RECORDING =====
+    micBtn.onclick = async () => {
+        if (isRecording) return;
+
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        audioChunks = [];
+        isRecording = true;
+        micBtn.classList.add('active');
+
+        addLine(`[${getTime()}] AUDIO_START`);
+
+        mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+
+        mediaRecorder.onstop = () => {
+            const blob = new Blob(audioChunks, { type: 'audio/webm' });
+
+            socket.send(JSON.stringify({
+                type: "audio"
+            }));
+            socket.send(blob);
+
+            addLine(`[${getTime()}] AUDIO_SENT`);
+            isRecording = false;
+            micBtn.classList.remove('active');
+        };
+
+        mediaRecorder.start();
+        setTimeout(() => mediaRecorder.stop(), 3000);
+    };
+
+    async function playProcessedAudio(blob) {
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioCtx = new AudioContext();
+    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+    const source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.playbackRate.value = 0.9; // More extreme pitch shift
+
+    // Multiple filters for heavy distortion
+    const lowpass = audioCtx.createBiquadFilter();
+    lowpass.type = "lowpass";
+    lowpass.frequency.value = 1500;
+    lowpass.Q.value = 8;
+
+    const highpass = audioCtx.createBiquadFilter();
+    highpass.type = "highpass";
+    highpass.frequency.value = 800;
+
+    // Bitcrusher effect via wave shaper
+    const distortion = audioCtx.createWaveShaper();
+    distortion.curve = makeDistortionCurve(150);
+    distortion.oversample = '3x';
+
+    // Chorus/vibrato effect
+    const delay = audioCtx.createDelay();
+    delay.delayTime.value = 0.01;
+    
+    const lfo = audioCtx.createOscillator();
+    lfo.frequency.value = 3;
+    
+    const lfoGain = audioCtx.createGain();
+    lfoGain.gain.value = 0.01;
+    
+    lfo.connect(lfoGain).connect(delay.delayTime);
+    lfo.start();
+
+    // Chain everything together
+    source
+        .connect(highpass)
+        .connect(lowpass)
+        .connect(distortion)
+        .connect(delay)
+        .connect(audioCtx.destination);
+    
+    source.start();
+}
+
+function makeDistortionCurve(amount) {
+    const samples = 44230;
+    const curve = new Float32Array(samples);
+    const deg = Math.PI / 180;
+    
+    for (let i = 0; i < samples; i++) {
+        const x = (i * 2) / samples - 1;
+        curve[i] = ((3 + amount) * x * 20 * deg) / (Math.PI + amount * Math.abs(x));
+    }
+    return curve;
+}
+
+    // ===== CLEAR LOG =====
+    clearBtn.onclick = () => {
+        messageLog.innerHTML = '';
+        messageCounter = 0;
+        msgCount.textContent = '0';
+        addLine(`[${getTime()}] SYSTEM: LOG_CLEARED`);
+        focusInput();
+    };
+
+    window.onload = () => {
+        addLine(`[${getTime()}] SYSTEM: INITIALIZED`);
+        setupSocket();
+        focusInput();
+    };
+
+    document.addEventListener('mousedown', focusInput);
+    document.addEventListener('keydown', focusInput);
+</script>
+
+
+
+</body>
+</html>
